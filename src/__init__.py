@@ -1,20 +1,13 @@
 from CTFd.plugins.challenges import BaseChallenge, CHALLENGE_CLASSES
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.keys import get_key_class
-from CTFd.models import db, WrongKeys, Keys, Challenges, Files, Tags, Teams, Hints
+from CTFd.models import db, WrongKeys, Solves, Keys, Challenges, Files, Tags, Teams, Hints
 from CTFd import utils
 import datetime
 
-class TimeDecaySolves(db.Model):
-    __table_args__ = (db.UniqueConstraint('chalid', 'teamid'), {})
-    id = db.Column(db.Integer, primary_key=True)
-    chalid = db.Column(db.Integer, db.ForeignKey('challenges.id'))
-    teamid = db.Column(db.Integer, db.ForeignKey('teams.id'))
-    ip = db.Column(db.String(46))
-    flag = db.Column(db.Text)
-    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    team = db.relationship('Teams', foreign_keys="TimeDecaySolves.teamid", lazy='joined')
-    chal = db.relationship('Challenges', foreign_keys="TimeDecaySolves.chalid", lazy='joined')
+class TimeDecaySolves(Solves):
+    __mapper_args__ = {'polymorphic_identity': 'time_decay_solves'}
+    id = db.Column(None, db.ForeignKey('solves.id'), primary_key=True)
     decayed_value = db.Column(db.Integer)
 
     def __init__(self, teamid, chalid, ip, flag, decayed_value):
@@ -23,10 +16,6 @@ class TimeDecaySolves(db.Model):
         self.teamid = teamid
         self.flag = flag
         self.decayed_value = decayed_value
-
-    def __repr__(self):
-        return '<time-decay-solve {}, {}, {}, {}, {}>'.format(self.teamid, self.chalid, self.ip, self.flag, self.decayed_value)
-
 
 class TimeDecayChallenge(BaseChallenge):
     id = "time-decay"  # Unique identifier used to register challenges
@@ -150,7 +139,8 @@ class TimeDecayChallenge(BaseChallenge):
         :return:
         """
         WrongKeys.query.filter_by(chalid=challenge.id).delete()
-        TimeDecaySolves.query.filter_by(chalid=challenge.id).delete()
+        Solves.query.filter_by(chalid=challenge.id).delete()
+        # TODO: Properly delete time-decay-solves. There's no automatic cascading?
         Keys.query.filter_by(chal=challenge.id).delete()
         files = Files.query.filter_by(chal=challenge.id).all()
         for f in files:
