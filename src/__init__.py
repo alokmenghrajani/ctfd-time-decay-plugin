@@ -1,11 +1,20 @@
 from CTFd.plugins.challenges import BaseChallenge, CHALLENGE_CLASSES
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.keys import get_key_class
-from CTFd.models import db, Solves, WrongKeys, Keys, Challenges, Files, Tags, Teams, Hints
+from CTFd.models import db, WrongKeys, Keys, Challenges, Files, Tags, Teams, Hints
 from CTFd import utils
+import datetime
 
-class TimeDecaySolves(Solves):
-    __mapper_args__ = {'polymorphic_identity': 'time-decay-solves'}
+class TimeDecaySolves(db.Model):
+    __table_args__ = (db.UniqueConstraint('chalid', 'teamid'), {})
+    id = db.Column(db.Integer, primary_key=True)
+    chalid = db.Column(db.Integer, db.ForeignKey('challenges.id'))
+    teamid = db.Column(db.Integer, db.ForeignKey('teams.id'))
+    ip = db.Column(db.String(46))
+    flag = db.Column(db.Text)
+    date = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    team = db.relationship('Teams', foreign_keys="TimeDecaySolves.teamid", lazy='joined')
+    chal = db.relationship('Challenges', foreign_keys="TimeDecaySolves.chalid", lazy='joined')
     decayed_value = db.Column(db.Integer)
 
     def __init__(self, teamid, chalid, ip, flag, decayed_value):
@@ -14,6 +23,10 @@ class TimeDecaySolves(Solves):
         self.teamid = teamid
         self.flag = flag
         self.decayed_value = decayed_value
+
+    def __repr__(self):
+        return '<time-decay-solve {}, {}, {}, {}, {}>'.format(self.teamid, self.chalid, self.ip, self.flag, self.decayed_value)
+
 
 class TimeDecayChallenge(BaseChallenge):
     id = "time-decay"  # Unique identifier used to register challenges
@@ -137,7 +150,6 @@ class TimeDecayChallenge(BaseChallenge):
         :return:
         """
         WrongKeys.query.filter_by(chalid=challenge.id).delete()
-        Solves.query.filter_by(chalid=challenge.id).delete()
         TimeDecaySolves.query.filter_by(chalid=challenge.id).delete()
         Keys.query.filter_by(chal=challenge.id).delete()
         files = Files.query.filter_by(chal=challenge.id).all()
@@ -171,7 +183,7 @@ class TimeDecayChallenge(BaseChallenge):
     @staticmethod
     def solve(team, chal, request):
         """
-        This method is used to insert Solves into the database in order to mark a challenge as solved.
+        This method is used to insert TimeDecaySolves into the database in order to mark a challenge as solved.
 
         :param team: The Team object from the database
         :param chal: The Challenge object from the database
@@ -179,6 +191,9 @@ class TimeDecayChallenge(BaseChallenge):
         :return:
         """
         provided_key = request.form['key'].strip()
+
+        # TODO: compute current value
+
         solve = TimeDecaySolves(teamid=team.id, chalid=chal.id, ip=utils.get_ip(req=request), flag=provided_key, decayed_value=5)
         db.session.add(solve)
         db.session.commit()
