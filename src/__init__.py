@@ -1,9 +1,9 @@
 from CTFd.plugins.challenges import CTFdStandardChallenge, CHALLENGE_CLASSES
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.keys import get_key_class
-from CTFd.models import db, WrongKeys, Solves, Keys, Challenges, Files, Tags, Teams, Hints
+from CTFd.models import db,Awards, WrongKeys, Solves, Keys, Challenges, Files, Tags, Teams, Hints
 from CTFd import utils
-from flask import session
+from flask import session, jsonify, request, render_template
 from sqlalchemy.sql import and_
 import datetime
 import math
@@ -98,6 +98,13 @@ class TimeDecayChallenge(CTFdStandardChallenge):
 
         # Return value if challenge gets solved now
         return TimeDecayChallenge.get_decayed_scores(challenge.initial, challenge.omega, solved.date)
+
+    @staticmethod
+    def value_for_team(challenge, teamid):
+        time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challenge.id, TimeDecaySolves.teamid==teamid)).first()
+        if time_decay_solved is None:
+            return 0
+        return time_decay_solved.decayed_value
 
     @staticmethod
     def get_decayed_scores(initial, omega, first_solve_time):
@@ -215,8 +222,90 @@ class TimeDecay(Challenges):
         self.initial = initial
         self.omega = omega
 
+def time_decay_score(self, admin=False):
+    return db.session.query(db.func.sum(TimeDecaySolves.decayed_value)).filter_by(teamid=self.id).first()[0]
+
+def solves_private_endpoint():
+    if not utils.authed():
+        return jsonify({'solves': []})
+    solves_public_endpoint(session['id'])
+
+def solves_public_endpoint(teamid):
+    solves = Solves.query.filter_by(teamid = teamid)
+    time_decay_solves = TimeDecaySolves.query.filter_by(teamid = teamid)
+    db.session.close()
+
+    response = {'solves': []}
+    for solve in solves:
+        value = 0
+        for v in time_decay_solves:
+            if v.chalid == solve.chalid:
+                value = v.decayed_value
+        response['solves'].append({
+            'chal': solve.chal.name,
+            'chalid': solve.chalid,
+            'team': solve.teamid,
+            'value': value,
+            'category': solve.chal.category,
+            'time': utils.unix_time(solve.date)
+        })
+    response['solves'].sort(key=lambda k: k['time'])
+    return jsonify(response)
+
+def team_endpoint(teamid):
+    if utils.get_config('workshop_mode'):
+        abort(404)
+
+    if utils.get_config('view_scoreboard_if_utils.authed') and not utils.authed():
+        return redirect(url_for('auth.login', next=request.path))
+    errors = []
+    freeze = utils.get_config('freeze')
+    user = Teams.query.filter_by(id=teamid).first_or_404()
+    solves = Solves.query.filter_by(teamid=teamid)
+    awards = Awards.query.filter_by(teamid=teamid)
+
+    place = user.place()
+    score = user.score()
+
+    if freeze:
+        freeze = utils.unix_time_to_utc(freeze)
+        if teamid != session.get('id'):
+            solves = solves.filter(Solves.date < freeze)
+            awards = awards.filter(Awards.date < freeze)
+
+    solves = solves.all()
+    awards = awards.all()
+    time_decay_solves = TimeDecaySolves.query.filter_by(teamid=teamid).all()
+
+    db.session.close()
+
+    if utils.hide_scores() and teamid != session.get('id'):
+        errors.append('Scores are currently hidden')
+
+    if errors:
+        return render_template('team.html', team=user, errors=errors)
+
+    # pass decayed_value
+    for s in solves:
+        for t in time_decay_solves:
+            if t.chalid == s.chalid:
+                s.decayed_value = t.decayed_value
+
+    if request.method == 'GET':
+        return render_template('team.html', solves=solves, awards=awards, team=user, score=score, place=place, score_frozen=utils.is_scoreboard_frozen())
+    elif request.method == 'POST':
+        json = {'solves': []}
+        for x in solves:
+            json['solves'].append({'id': x.id, 'chal': x.chalid, 'team': x.teamid, 'decayed_value': TimeDecayChallenge.value_for_team(x.chalid, x.teamid)})
+        return jsonify(json)
 
 def load(app):
     app.db.create_all()
     CHALLENGE_CLASSES['time-decay'] = TimeDecayChallenge
     register_plugin_assets_directory(app, base_path='/plugins/ctfd-time-decay-plugin/assets/')
+
+    # Monkey patching...
+    Teams.score = time_decay_score
+    #app.view_functions['challenges.solves_private'] = solves_private_endpoint
+    app.view_functions['challenges.solves_public'] = solves_public_endpoint
+    app.view_functions['views.team'] = team_endpoint
