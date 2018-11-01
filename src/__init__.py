@@ -3,7 +3,10 @@ from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.keys import get_key_class
 from CTFd.models import db, WrongKeys, Solves, Keys, Challenges, Files, Tags, Teams, Hints
 from CTFd import utils
+from flask import session
+from sqlalchemy.sql import and_
 import datetime
+import math
 
 class TimeDecaySolves(Solves):
     __mapper_args__ = {'polymorphic_identity': 'time_decay_solves'}
@@ -75,6 +78,28 @@ class TimeDecayChallenge(BaseChallenge):
         db.session.commit()
 
     @staticmethod
+    def value(challenge):
+        # Check if any team has solved the challenge
+        solved = Solves.query.filter_by(chalid=challenge.id).order_by(Solves.date).first()
+        if solved is None:
+            return challenge.initial
+
+        # Check if the current team has solved it
+        if solved and utils.authed():
+            teamid = session['id']
+            time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challenge.id, TimeDecaySolves.teamid==teamid)).first()
+            if time_decay_solved is not None:
+                return time_decay_solved.decayed_value
+
+        # Return value if challenge gets solved now
+        return TimeDecayChallenge.get_decayed_scores(challenge.initial, challenge.omega, solved.date)
+
+    @staticmethod
+    def get_decayed_scores(initial, omega, first_solve_time):
+        time_delta = (datetime.datetime.utcnow() - first_solve_time).total_seconds()
+        return math.floor(initial * (0.5 ** (time_delta / omega)))
+
+    @staticmethod
     def read(challenge):
         """
         This method is in used to access the data of a challenge in a format processable by the front end.
@@ -84,15 +109,12 @@ class TimeDecayChallenge(BaseChallenge):
         """
         challenge = TimeDecay.query.filter_by(id=challenge.id).first()
 
-        # current_value is going to depend on whether the person reading has solved the challenge or not...
-
         data = {
             'id': challenge.id,
             'name': challenge.name,
-            'value': 0,
+            'value': TimeDecayChallenge.value(challenge),
             'initial': challenge.initial,
             'omega': challenge.omega,
-            'current_value': 666,
             'description': challenge.description,
             'category': challenge.category,
             'hidden': challenge.hidden,
@@ -139,8 +161,10 @@ class TimeDecayChallenge(BaseChallenge):
         :return:
         """
         WrongKeys.query.filter_by(chalid=challenge.id).delete()
+        solves = TimeDecaySolves.query.filter_by(chalid=challenge.id).all()
+        for s in solves:
+            TimeDecaySolves.query.filter_by(id=s.id).delete()
         Solves.query.filter_by(chalid=challenge.id).delete()
-        # TODO: Properly delete time-decay-solves. There's no automatic cascading?
         Keys.query.filter_by(chal=challenge.id).delete()
         files = Files.query.filter_by(chal=challenge.id).all()
         for f in files:
@@ -182,9 +206,9 @@ class TimeDecayChallenge(BaseChallenge):
         """
         provided_key = request.form['key'].strip()
 
-        # TODO: compute current value
-
-        solve = TimeDecaySolves(teamid=team.id, chalid=chal.id, ip=utils.get_ip(req=request), flag=provided_key, decayed_value=5)
+        # Record current value for the challenge
+        value = TimeDecayChallenge.value(chal)
+        solve = TimeDecaySolves(teamid=team.id, chalid=chal.id, ip=utils.get_ip(req=request), flag=provided_key, decayed_value=value)
         db.session.add(solve)
         db.session.commit()
         db.session.close()
