@@ -84,7 +84,7 @@ class TimeDecayChallenge(CTFdStandardChallenge):
     @staticmethod
     def value(challenge):
         # Check if any team has solved the challenge
-        solved = Solves.query.filter_by(chalid=challenge.id).order_by(Solves.date).first()
+        solved = Solves.query.filter_by(chalid=challenge.id).order_by(Solves.date.asc()).first()
         if solved is None:
             return challenge.initial
 
@@ -100,8 +100,8 @@ class TimeDecayChallenge(CTFdStandardChallenge):
         return TimeDecayChallenge.get_decayed_scores(challenge.initial, challenge.omega, solved.date)
 
     @staticmethod
-    def value_for_team(challenge, teamid):
-        time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challenge.id, TimeDecaySolves.teamid==teamid)).first()
+    def value_for_team(challid, teamid):
+        time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challid, TimeDecaySolves.teamid==teamid)).first()
         if time_decay_solved is None:
             return 0
         return time_decay_solved.decayed_value
@@ -299,6 +299,16 @@ def team_endpoint(teamid):
             json['solves'].append({'id': x.id, 'chal': x.chalid, 'team': x.teamid, 'decayed_value': TimeDecayChallenge.value_for_team(x.chalid, x.teamid)})
         return jsonify(json)
 
+def who_solved_endpoint(chalid):
+    response = {'teams': []}
+    if utils.hide_scores():
+        return jsonify(response)
+    solves = Solves.query.join(Teams, Solves.teamid == Teams.id).filter(Solves.chalid == chalid, Teams.banned == False).order_by(Solves.date.asc())
+    for solve in solves:
+        response['teams'].append({'id': solve.team.id, 'name': solve.team.name, 'date': solve.date,
+            'decayed_value': TimeDecayChallenge.value_for_team(chalid, solve.team.id)})
+    return jsonify(response)
+
 def load(app):
     app.db.create_all()
     CHALLENGE_CLASSES['time-decay'] = TimeDecayChallenge
@@ -309,3 +319,4 @@ def load(app):
     #app.view_functions['challenges.solves_private'] = solves_private_endpoint
     app.view_functions['challenges.solves_public'] = solves_public_endpoint
     app.view_functions['views.team'] = team_endpoint
+    app.view_functions['challenges.who_solved'] = who_solved_endpoint
