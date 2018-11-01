@@ -1,4 +1,4 @@
-from CTFd.plugins.challenges import BaseChallenge, CHALLENGE_CLASSES
+from CTFd.plugins.challenges import CTFdStandardChallenge, CHALLENGE_CLASSES
 from CTFd.plugins import register_plugin_assets_directory
 from CTFd.plugins.keys import get_key_class
 from CTFd.models import db, WrongKeys, Solves, Keys, Challenges, Files, Tags, Teams, Hints
@@ -8,19 +8,23 @@ from sqlalchemy.sql import and_
 import datetime
 import math
 
-class TimeDecaySolves(Solves):
-    __mapper_args__ = {'polymorphic_identity': 'time_decay_solves'}
-    id = db.Column(None, db.ForeignKey('solves.id'), primary_key=True)
+class TimeDecaySolves(db.Model):
+    __table_args__ = (db.UniqueConstraint('chalid', 'teamid'), {})
+    id = db.Column(db.Integer, primary_key=True)
+    chalid = db.Column(db.Integer, db.ForeignKey('challenges.id'))
+    teamid = db.Column(db.Integer, db.ForeignKey('teams.id'))
     decayed_value = db.Column(db.Integer)
 
-    def __init__(self, teamid, chalid, ip, flag, decayed_value):
-        self.ip = ip
+    def __init__(self, chalid, teamid, decayed_value):
         self.chalid = chalid
         self.teamid = teamid
-        self.flag = flag
         self.decayed_value = decayed_value
 
-class TimeDecayChallenge(BaseChallenge):
+    def __repr__(self):
+        return '<time-decay-solve {}, {}, {}, {}, {}, {}>'.format(self.id, self.chalid, self.teamid, self.decayed_value)
+
+
+class TimeDecayChallenge(CTFdStandardChallenge):
     id = "time-decay"  # Unique identifier used to register challenges
     name = "time-decay"  # Name of a challenge type
     templates = {  # Handlebars templates used for each aspect of challenge editing & viewing
@@ -85,10 +89,11 @@ class TimeDecayChallenge(BaseChallenge):
             return challenge.initial
 
         # Check if the current team has solved it
-        if solved and utils.authed():
+        if utils.authed():
             teamid = session['id']
-            time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challenge.id, TimeDecaySolves.teamid==teamid)).first()
-            if time_decay_solved is not None:
+            solved_by_team = Solves.query.filter(and_(Solves.chalid==challenge.id, Solves.teamid==teamid)).first()
+            if solved_by_team is not None:
+                time_decay_solved = TimeDecaySolves.query.filter(and_(TimeDecaySolves.chalid==challenge.id, TimeDecaySolves.teamid==teamid)).first_or_404()
                 return time_decay_solved.decayed_value
 
         # Return value if challenge gets solved now
@@ -161,9 +166,7 @@ class TimeDecayChallenge(BaseChallenge):
         :return:
         """
         WrongKeys.query.filter_by(chalid=challenge.id).delete()
-        solves = TimeDecaySolves.query.filter_by(chalid=challenge.id).all()
-        for s in solves:
-            TimeDecaySolves.query.filter_by(id=s.id).delete()
+        TimeDecaySolves.query.filter_by(chalid=challenge.id).delete()
         Solves.query.filter_by(chalid=challenge.id).delete()
         Keys.query.filter_by(chal=challenge.id).delete()
         files = Files.query.filter_by(chal=challenge.id).all()
@@ -175,24 +178,6 @@ class TimeDecayChallenge(BaseChallenge):
         Challenges.query.filter_by(id=challenge.id).delete()
         TimeDecay.query.filter_by(id=challenge.id).delete()
         db.session.commit()
-
-    @staticmethod
-    def attempt(chal, request):
-        """
-        This method is used to check whether a given input is right or wrong. It does not make any changes and should
-        return a boolean for correctness and a string to be shown to the user. It is also in charge of parsing the
-        user's input from the request itself.
-
-        :param chal: The Challenge object from the database
-        :param request: The request the user submitted
-        :return: (boolean, string)
-        """
-        provided_key = request.form['key'].strip()
-        chal_keys = Keys.query.filter_by(chal=chal.id).all()
-        for chal_key in chal_keys:
-            if get_key_class(chal_key.type).compare(chal_key, provided_key):
-                return True, 'Correct'
-        return False, 'Incorrect'
 
     @staticmethod
     def solve(team, chal, request):
@@ -208,24 +193,10 @@ class TimeDecayChallenge(BaseChallenge):
 
         # Record current value for the challenge
         value = TimeDecayChallenge.value(chal)
-        solve = TimeDecaySolves(teamid=team.id, chalid=chal.id, ip=utils.get_ip(req=request), flag=provided_key, decayed_value=value)
+        solve = Solves(teamid=team.id, chalid=chal.id, ip=utils.get_ip(req=request), flag=provided_key)
         db.session.add(solve)
-        db.session.commit()
-        db.session.close()
-
-    @staticmethod
-    def fail(team, chal, request):
-        """
-        This method is used to insert WrongKeys into the database in order to mark an answer incorrect.
-
-        :param team: The Team object from the database
-        :param chal: The Challenge object from the database
-        :param request: The request the user submitted
-        :return:
-        """
-        provided_key = request.form['key'].strip()
-        wrong = WrongKeys(teamid=team.id, chalid=chal.id, ip=utils.get_ip(request), flag=provided_key)
-        db.session.add(wrong)
+        time_decay_solve = TimeDecaySolves(teamid=team.id, chalid=chal.id, decayed_value=value)
+        db.session.add(time_decay_solve)
         db.session.commit()
         db.session.close()
 
