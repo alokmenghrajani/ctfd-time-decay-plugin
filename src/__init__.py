@@ -455,6 +455,14 @@ def topteams_endpoint(count):
 
     return jsonify(json)
 
+def scoreboard_view_endpoint():
+    if utils.get_config('view_scoreboard_if_authed') and not utils.authed():
+        return redirect(url_for('auth.login', next=request.path))
+    if utils.hide_scores():
+        return render_template('scoreboard.html', errors=['Scores are currently hidden'])
+    standings = get_standings_monkey_patch()
+    return render_template('scoreboard.html', teams=standings, score_frozen=utils.is_scoreboard_frozen())
+
 
 def load(app):
     app.db.create_all()
@@ -468,3 +476,4 @@ def load(app):
     app.view_functions['views.team'] = team_endpoint
     app.view_functions['challenges.who_solved'] = who_solved_endpoint
     app.view_functions['scoreboard.topteams'] = topteams_endpoint
+    app.view_functions['scoreboard.scoreboard_view'] = scoreboard_view_endpoint
